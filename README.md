@@ -4,6 +4,196 @@ ReflectAI is a secure, user-authenticated journaling and self-reflection web app
 
 ---
 
+## 📐 Architecture & Data Flow Diagrams
+
+### System Architecture Diagram
+```mermaid
+graph TD
+    User([👤 User / Browser])
+    
+    subgraph Frontend ["Client-Side (React 19 + Vite + Tailwind CSS)"]
+        Landing["Landing Page / Google Sign-In"]
+        Dashboard["Reflection Studio & Dashboard"]
+        VaultHistory["History Sidebar & Filters"]
+        FirebaseAuthClient["Firebase Auth Client SDK"]
+        FirestoreClient["Firestore Client SDK"]
+    end
+    
+    subgraph Backend ["Backend Service (Express on Node.js / Cloud Run)"]
+        ExpressServer["Express API Server (:3000)"]
+        ChatEndpoint["/api/chat (Multi-turn Reflection)"]
+        SummarizeEndpoint["/api/summarize (Synthesis & Action Items)"]
+        HealthEndpoint["/api/health"]
+        FallbackLadder["Gemini Fallback Ladder Manager"]
+    end
+    
+    subgraph CloudServices ["Google Cloud & Firebase Infrastructure"]
+        GoogleIdentity["Google Identity / Firebase Auth"]
+        CloudFirestore[("Cloud Firestore\n/users/{userId}/interactions/*")]
+        SecretManager["Google Cloud Secret Manager\n(GEMINI_API_KEY)"]
+        GeminiAPI["Gemini API (3.6 Flash / 3.1 Flash-Lite / 3.7 Flash)"]
+    end
+
+    %% Auth Flow
+    User <-->|1. Sign in with Google Popup| Landing
+    Landing --> FirebaseAuthClient
+    FirebaseAuthClient <-->|OAuth Token Exchange| GoogleIdentity
+    FirebaseAuthClient -->|Auth State Observer| Dashboard
+
+    %% Database Flow
+    Dashboard <-->|2. Owner-Isolated CRUD Sync| FirestoreClient
+    VaultHistory <-->|Query & Filter User Entries| FirestoreClient
+    FirestoreClient <-->|Security Rules Enforced Read/Write| CloudFirestore
+
+    %% AI Flow
+    Dashboard -->|3. POST /api/chat & /api/summarize| ExpressServer
+    ExpressServer --> ChatEndpoint & SummarizeEndpoint
+    ChatEndpoint & SummarizeEndpoint --> FallbackLadder
+    FallbackLadder -->|Fetch API Key| SecretManager
+    FallbackLadder <-->|Generate Reflections & JSON Summaries| GeminiAPI
+    FallbackLadder -->|Return AI Response| Dashboard
+```
+
+### End-to-End User Interaction Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Browser)
+    participant UI as React Frontend
+    participant Auth as Firebase Auth
+    participant Server as Express Backend
+    participant Gemini as Gemini API
+    participant DB as Cloud Firestore
+
+    %% Step 1: Authentication
+    User->>UI: Click "Continue with Google"
+    UI->>Auth: signInWithPopup(googleProvider)
+    Auth-->>UI: Return User Profile (uid, email, displayName)
+    UI->>DB: fetchUserJournalEntries(userId)
+    DB-->>UI: Return user's private reflections list
+
+    %% Step 2: Journal & Reflection
+    User->>UI: Enter reflection note & select tone (e.g. Empathetic)
+    UI->>UI: Append user message to UI state
+    UI->>Server: POST /api/chat { messages, tone, category, title }
+    Server->>Gemini: generateContent(gemini-3.6-flash, contents, systemInstruction)
+    alt Primary model succeeds
+        Gemini-->>Server: Return generated reflection
+    else Rate limit / unavailable
+        Server->>Gemini: Retry with gemini-3.1-flash-lite / gemini-3.7-flash
+        Gemini-->>Server: Return fallback reflection
+    end
+    Server-->>UI: JSON { reply, modelUsed }
+    UI->>UI: Render AI reflection response
+    UI->>DB: saveJournalEntry(entry with messages)
+    DB-->>UI: Confirm Firestore write (Vault Synced)
+
+    %% Step 3: Synthesis
+    User->>UI: Click "Synthesize Insights"
+    UI->>Server: POST /api/summarize { messages, title }
+    Server->>Gemini: generateContent(systemInstruction: JSON extractor)
+    Gemini-->>Server: JSON { summary, keyInsights, actionItems }
+    Server-->>UI: Return structured insights
+    UI->>DB: saveJournalEntry(with updated summary & action items)
+    DB-->>UI: Persisted to user subcollection
+```
+
+---
+
+## 💻 Local Development & Testing Guide
+
+Follow these step-by-step instructions to run, test, and debug the repository locally.
+
+### 1. Prerequisites
+- **Node.js**: Version `20.x` or later.
+- **npm** or **bun** / **yarn** package manager.
+- **Gemini API Key**: Obtain a free API key from [Google AI Studio](https://aistudio.google.com/).
+- **Firebase Project**: (Optional for local if using the provisioned config file `firebase-applet-config.json`).
+
+### 2. Clone & Install Dependencies
+```bash
+# Clone the repository
+git clone <YOUR_REPO_URL>
+cd reflectai
+
+# Install dependencies
+npm install
+```
+
+### 3. Configure Environment Variables
+Create a local `.env` file based on `.env.example`:
+```bash
+cp .env.example .env
+```
+
+Edit `.env` to supply your Gemini API key:
+```env
+GEMINI_API_KEY="AIzaSyYourActualGeminiAPIKeyHere"
+APP_URL="http://localhost:3000"
+PORT=3000
+```
+
+> **Note:** The Firebase configuration is read automatically from `firebase-applet-config.json`. Ensure this file exists in your project root with your Firebase project credentials.
+
+### 4. Start Local Development Server
+Run the unified Express + Vite development server:
+```bash
+npm run dev
+```
+Open your browser and navigate to:
+```
+http://localhost:3000
+```
+
+### 5. Validate TypeScript & Linter
+Run static type-checking and lint checks:
+```bash
+npm run lint
+```
+
+### 6. Build and Test Production Bundle Locally
+Verify that both frontend Vite assets and the backend CommonJS server bundle compile cleanly:
+```bash
+# Compile frontend and backend bundles
+npm run build
+
+# Start the production server locally
+npm start
+```
+
+---
+
+## 📂 Complete Project Repository Structure
+
+```
+.
+├── .env.example                # Example environment variable declarations
+├── .gitignore                  # Git ignore rules for node_modules, build artifacts, etc.
+├── firebase-applet-config.json # Firebase project configuration & client keys
+├── firestore.rules             # Deployed owner-bound Firestore security rules
+├── index.html                  # HTML entry point with metadata and fonts
+├── metadata.json               # Applet metadata, capabilities, and permissions
+├── package.json                # Project dependencies, build, dev, and start scripts
+├── README.md                   # Complete architectural guide, flow diagrams, and test suite
+├── server.ts                   # Express server proxy with Gemini API fallback ladder
+├── tsconfig.json               # TypeScript compiler configuration
+├── vite.config.ts              # Vite bundler & Tailwind CSS configuration
+└── src/
+    ├── App.tsx                 # Primary app state coordinator, auth listener & routing
+    ├── firebase.ts             # Firebase Auth & Firestore client SDK helpers (with payload hygiene)
+    ├── index.css               # Global Tailwind CSS imports
+    ├── main.tsx                # React DOM root entry point
+    ├── types.ts                # Shared TypeScript interfaces, categories, moods, and payloads
+    └── components/
+        ├── LandingView.tsx     # Hero landing page & federated Google Sign-In prompt
+        ├── Navbar.tsx          # Top navigation header with user profile pill & actions
+        ├── ReflectionStudio.tsx# Multi-turn chat studio, AI synthesizer, tone/mood selectors
+        ├── SecuritySpecModal.tsx# Interactive modal showing Threat Model & OWASP specs
+        └── SidebarHistory.tsx  # Searchable, filterable vault of past reflection entries
+```
+
+---
+
 ## 🛡️ 1. Agentic Threat Model Summary (The 5 Threat Zones)
 
 | Threat Zone | Identified Attack Vector / Risk | OWASP Classification | Implemented Countermeasure & Architecture |
@@ -91,7 +281,7 @@ gcloud run services update reflectai \
 Below are step-by-step verification flows covering every user-facing interaction:
 
 ### Test Case 1: Unauthenticated Landing & Google Sign-In
-1. Navigate to the application root URL.
+1. Navigate to the application root URL (`http://localhost:3000`).
 2. **Verify**: Landing page displays the secure zero-password banner, technical security highlights, and "Continue with Google" button.
 3. Click "Continue with Google" to initiate federated popup authentication.
 4. **Expected Result**: On successful authentication, the user profile is loaded and the app transitions into the private dashboard.
